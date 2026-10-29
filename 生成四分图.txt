@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Nauticam 产品图切割器 (智能同步版)</title>
+    <!-- 引入 JSZip 用于多图打包压缩 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 20px; background: #f0f0f0; margin: 0; }
+        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); max-width: 900px; margin: auto; }
+        .controls { margin: 20px 0; padding: 15px; background: #f9f9f9; border-radius: 8px; display: none; border: 1px solid #ddd; }
+        
+        .preview-selector { margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px dashed #ccc; display: none; }
+        .preview-btn { padding: 8px 16px; margin: 5px; font-size: 14px; cursor: pointer; border: 1px solid #007bff; background: white; color: #007bff; border-radius: 20px; transition: 0.2s; }
+        .preview-btn.active { background: #007bff; color: white; font-weight: bold; }
+        .preview-btn:hover { background: #e6f2ff; }
+        .preview-btn.active:hover { background: #0056b3; }
+        .preview-btn.custom-adjusted { border-color: #ff9800; color: #ff9800; }
+        .preview-btn.active.custom-adjusted { background: #ff9800; color: white; border-color: #ff9800; }
+
+        .sync-status { font-size: 14px; color: #666; margin-bottom: 15px; background: #eef2f5; padding: 10px; border-radius: 5px; display: inline-block;}
+        .btn-reset { background: #ff9800; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer; margin-left: 10px; font-size: 12px; display: none;}
+        .btn-reset:hover { background: #e68a00; }
+
+        .slider-group { margin-bottom: 15px; }
+        input[type="range"] { width: 300px; vertical-align: middle; }
+        #canvas { max-width: 100%; max-height: 400px; border: 1px solid #ccc; margin-top: 20px; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+        
+        .download-buttons { display: none; margin-top: 20px; justify-content: center; gap: 15px; flex-wrap: wrap; }
+        .btn { padding: 12px 24px; font-size: 16px; cursor: pointer; border: none; border-radius: 5px; color: white; font-weight: bold; transition: 0.2s;}
+        .btn-tl { background: #17a2b8; } .btn-tl:hover { background: #138496; }
+        .btn-tr { background: #28a745; } .btn-tr:hover { background: #218838; }
+        .btn-bl { background: #ffc107; color: #333;} .btn-bl:hover { background: #e0a800; }
+        .btn-br { background: #dc3545; } .btn-br:hover { background: #c82333; }
+        
+        .btn-zip { background: #6f42c1; display: none; margin: 20px auto 0; width: 100%; max-width: 400px; }
+        .btn-zip:hover { background: #5a32a3; }
+        .btn-zip:disabled { background: #999; cursor: not-allowed; }
+        .file-info { color: #d9534f; margin-top: 10px; font-size: 14px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2> 产品图切割器</h2>
+    <p>默认所有图片跟随【图1】的分割比例。点开其他图并调整滑块，即可为单张图独立微调。</p>
+    
+    <input type="file" id="imageInput" accept="image/*" multiple>
+    <div id="fileInfo" class="file-info"></div>
+    
+    <div id="controls" class="controls">
+        <!-- 多图切换按钮区 -->
+        <div id="previewSelector" class="preview-selector">
+            <div style="margin-bottom: 10px; font-weight: bold; color: #555;">选择要微调的图片：</div>
+            <div id="previewButtons"></div>
+        </div>
+
+        <div class="sync-status" id="syncStatusText">
+            当前模式：跟随【图1】的主设置
+            <button class="btn-reset" id="resetSyncBtn" onclick="resetCurrentToGlobal()">重置为跟随图1</button>
+        </div>
+
+        <div class="slider-group">
+            <label>垂直分割线 (左右): <span id="xVal">50</span>%</label><br>
+            <input type="range" id="xSlider" min="10" max="90" value="50">
+        </div>
+        <div class="slider-group">
+            <label>水平分割线 (上下): <span id="yVal">50</span>%</label><br>
+            <input type="range" id="ySlider" min="10" max="90" value="50">
+        </div>
+    </div>
+
+    <canvas id="canvas"></canvas>
+    
+    <!-- 单图下载按钮 -->
+    <div id="downloadButtons" class="download-buttons">
+        <button class="btn btn-tl" onclick="downloadPart('tl')">⬇ 下载当前图 左上</button>
+        <button class="btn btn-tr" onclick="downloadPart('tr')">⬇ 下载当前图 右上</button>
+        <button class="btn btn-bl" onclick="downloadPart('bl')">⬇ 下载当前图 左下</button>
+        <button class="btn btn-br" onclick="downloadPart('br')">⬇ 下载当前图 右下</button>
+    </div>
+
+    <!-- 多图打包下载按钮 -->
+    <button id="downloadZipBtn" class="btn btn-zip">打包下载全部图片 (ZIP分类)</button>
+</div>
+
+<script>
+    const imageInput = document.getElementById('imageInput');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const controls = document.getElementById('controls');
+    const xSlider = document.getElementById('xSlider');
+    const ySlider = document.getElementById('ySlider');
+    const xVal = document.getElementById('xVal');
+    const yVal = document.getElementById('yVal');
+    const downloadButtons = document.getElementById('downloadButtons');
+    const downloadZipBtn = document.getElementById('downloadZipBtn');
+    const fileInfo = document.getElementById('fileInfo');
+    const previewSelector = document.getElementById('previewSelector');
+    const previewButtons = document.getElementById('previewButtons');
+    const syncStatusText = document.getElementById('syncStatusText');
+    const resetSyncBtn = document.getElementById('resetSyncBtn');
+
+    let images = [];        
+    let fileList = [];      
+    let cutSettings = [];   // 存储每张图的独立切割设置 { x, y, isCustom }
+    let currentPreviewIdx = 0; 
+    const gap = 20;
+
+    // 监听文件上传
+    imageInput.addEventListener('change', async function(e) {
+        const files = Array.from(e.target.files);
+        if (files.length === 0) return;
+
+        fileList = files;
+        images = [];
+        cutSettings = [];
+        currentPreviewIdx = 0;
+        
+        fileInfo.innerText = "正在加载图片，请稍候...";
+        controls.style.display = "block";
+
+        for (let i = 0; i < files.length; i++) {
+            const img = await loadImage(files[i]);
+            images.push(img);
+            // 默认：全部跟随图一 (50%)，isCustom 为 false
+            cutSettings.push({ x: 50, y: 50, isCustom: false }); 
+        }
+
+        fileInfo.innerText = `已加载 ${files.length} 张图片`;
+        
+        if (files.length === 1) {
+            previewSelector.style.display = "none";
+            downloadZipBtn.style.display = "none";
+        } else {
+            previewSelector.style.display = "block";
+            downloadZipBtn.style.display = "block";
+            renderPreviewButtons();
+        }
+
+        downloadButtons.style.display = "flex";
+        switchPreview(0);
+    });
+
+    // 生成图片切换按钮
+    function renderPreviewButtons() {
+        previewButtons.innerHTML = "";
+        fileList.forEach((file, index) => {
+            const btn = document.createElement('button');
+            // 判断是否被单独调整过，加上特殊颜色样式
+            btn.className = index === currentPreviewIdx ? "preview-btn active" : "preview-btn";
+            if (cutSettings[index].isCustom) btn.classList.add("custom-adjusted");
+            
+            btn.innerText = `图 ${index + 1}` + (cutSettings[index].isCustom ? " (已独立)" : "");
+            btn.onclick = () => switchPreview(index);
+            previewButtons.appendChild(btn);
+        });
+    }
+
+    // 切换当前预览的图片
+    function switchPreview(index) {
+        currentPreviewIdx = index;
+        renderPreviewButtons(); // 重新渲染按钮以更新高亮状态
+
+        // 更新滑块为当前图片保存的值
+        xSlider.value = cutSettings[index].x;
+        ySlider.value = cutSettings[index].y;
+        xVal.innerText = cutSettings[index].x;
+        yVal.innerText = cutSettings[index].y;
+
+        // 更新同步状态提示
+        updateSyncStatusUI();
+        renderPreview();
+    }
+
+    // 更新状态栏 UI
+    function updateSyncStatusUI() {
+        if (images.length === 1) {
+            syncStatusText.style.display = "none";
+            return;
+        }
+        syncStatusText.style.display = "inline-block";
+
+        if (currentPreviewIdx === 0) {
+            syncStatusText.innerHTML = `当前正在编辑【图1】的主设置（其他跟随的图片将同步变化）`;
+            resetSyncBtn.style.display = "none";
+        } else {
+            if (cutSettings[currentPreviewIdx].isCustom) {
+                syncStatusText.innerHTML = `当前图片已 <b>独立微调</b>（不跟随图1）`;
+                resetSyncBtn.style.display = "inline-block";
+            } else {
+                syncStatusText.innerHTML = `当前图片正在 <b>跟随【图1】</b> 的主设置`;
+                resetSyncBtn.style.display = "none";
+            }
+        }
+    }
+
+    // 将当前图片重置为跟随图一
+    function resetCurrentToGlobal() {
+        if (currentPreviewIdx === 0) return;
+        
+        // 继承图一的设置
+        cutSettings[currentPreviewIdx].x = cutSettings[0].x;
+        cutSettings[currentPreviewIdx].y = cutSettings[0].y;
+        cutSettings[currentPreviewIdx].isCustom = false; // 取消独立状态
+        
+        switchPreview(currentPreviewIdx); // 刷新 UI 和 预览
+    }
+
+    // 核心联动逻辑：滑动时
+    xSlider.addEventListener('input', () => { 
+        xVal.innerText = xSlider.value; 
+        const val = parseFloat(xSlider.value);
+        
+        if (currentPreviewIdx === 0) {
+            // 如果拖的是图1，遍历所有没被自定义的图，同步更新
+            cutSettings.forEach((setting, i) => {
+                if (!setting.isCustom) setting.x = val;
+            });
+        } else {
+            // 如果拖的是图2/图3等，将其标记为已独立微调
+            cutSettings[currentPreviewIdx].x = val;
+            cutSettings[currentPreviewIdx].isCustom = true;
+            updateSyncStatusUI();
+            renderPreviewButtons();
+        }
+        renderPreview(); 
+    });
+
+    ySlider.addEventListener('input', () => { 
+        yVal.innerText = ySlider.value; 
+        const val = parseFloat(ySlider.value);
+        
+        if (currentPreviewIdx === 0) {
+            cutSettings.forEach((setting, i) => {
+                if (!setting.isCustom) setting.y = val;
+            });
+        } else {
+            cutSettings[currentPreviewIdx].y = val;
+            cutSettings[currentPreviewIdx].isCustom = true;
+            updateSyncStatusUI();
+            renderPreviewButtons();
+        }
+        renderPreview(); 
+    });
+
+    function getCutCoords(w, h, setting) {
+        return {
+            cutX: w * (setting.x / 100),
+            cutY: h * (setting.y / 100)
+        };
+    }
+
+    function renderPreview() {
+        if (images.length === 0) return;
+        const img = images[currentPreviewIdx];
+        const setting = cutSettings[currentPreviewIdx];
+        const w = img.width;
+        const h = img.height;
+        const { cutX, cutY } = getCutCoords(w, h, setting);
+
+        canvas.width = w + gap;
+        canvas.height = h + gap;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (cutX > 0 && cutY > 0) ctx.drawImage(img, 0, 0, cutX, cutY, 0, 0, cutX, cutY);
+        if (w - cutX > 0 && cutY > 0) ctx.drawImage(img, cutX, 0, w - cutX, cutY, cutX + gap, 0, w - cutX, cutY);
+        if (cutX > 0 && h - cutY > 0) ctx.drawImage(img, 0, cutY, cutX, h - cutY, 0, cutY + gap, cutX, h - cutY);
+        if (w - cutX > 0 && h - cutY > 0) ctx.drawImage(img, cutX, cutY, w - cutX, h - cutY, cutX + gap, cutY + gap, w - cutX, h - cutY);
+
+        canvas.style.display = "block";
+    }
+
+    // 下载当前图
+    function downloadPart(part) {
+        if (images.length === 0) return;
+        const img = images[currentPreviewIdx];
+        const setting = cutSettings[currentPreviewIdx];
+        const w = img.width;
+        const h = img.height;
+        const { cutX, cutY } = getCutCoords(w, h, setting);
+        
+        const tempCanvas = document.createElement('canvas');
+        const tempCtx = tempCanvas.getContext('2d');
+
+        let sx = 0, sy = 0, sw = 0, sh = 0, fileName = "";
+        let baseName = fileList[currentPreviewIdx].name.replace(/\.[^/.]+$/, "");
+
+        if (part === 'tl') { sx = 0; sy = 0; sw = cutX; sh = cutY; fileName = `${baseName}_左上.png`; }
+        else if (part === 'tr') { sx = cutX; sy = 0; sw = w - cutX; sh = cutY; fileName = `${baseName}_右上.png`; }
+        else if (part === 'bl') { sx = 0; sy = cutY; sw = cutX; sh = h - cutY; fileName = `${baseName}_左下.png`; }
+        else if (part === 'br') { sx = cutX; sy = cutY; sw = w - cutX; sh = h - cutY; fileName = `${baseName}_右下.png`; }
+
+        tempCanvas.width = sw;
+        tempCanvas.height = sh;
+        tempCtx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+
+        triggerDownload(tempCanvas.toDataURL('image/png'), fileName);
+    }
+
+    // 打包下载
+    downloadZipBtn.addEventListener('click', async () => {
+        if (fileList.length === 0) return;
+        
+        downloadZipBtn.innerText = "正在处理打包，请稍候...";
+        downloadZipBtn.disabled = true;
+
+        const zip = new JSZip();
+
+        for (let i = 0; i < images.length; i++) {
+            const img = images[i];
+            const setting = cutSettings[i];
+            const baseName = fileList[i].name.replace(/\.[^/.]+$/, "");
+            
+            const imgFolder = zip.folder(baseName);
+            
+            const w = img.width;
+            const h = img.height;
+            const { cutX, cutY } = getCutCoords(w, h, setting);
+
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+
+            const addToZip = (sx, sy, sw, sh, suffix) => {
+                return new Promise(resolve => {
+                    tempCanvas.width = sw;
+                    tempCanvas.height = sh;
+                    tempCtx.clearRect(0,0,sw,sh);
+                    tempCtx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+                    
+                    tempCanvas.toBlob(blob => {
+                        imgFolder.file(`${suffix}.png`, blob);
+                        resolve();
+                    }, 'image/png');
+                });
+            };
+
+            await Promise.all([
+                addToZip(0, 0, cutX, cutY, '左上'),
+                addToZip(cutX, 0, w - cutX, cutY, '右上'),
+                addToZip(0, cutY, cutX, h - cutY, '左下'),
+                addToZip(cutX, cutY, w - cutX, h - cutY, '右下')
+            ]);
+        }
+
+        zip.generateAsync({ type: "blob" }).then(content => {
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(content);
+            const dateStr = new Date().toISOString().slice(0,10);
+            link.download = `Nauticam_批量切图_${dateStr}.zip`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            downloadZipBtn.innerText = "✅ 打包下载成功！";
+            setTimeout(() => {
+                downloadZipBtn.disabled = false;
+                downloadZipBtn.innerText = "打包下载全部图片 (ZIP分类)";
+            }, 3000);
+        });
+    });
+
+    function loadImage(file) {
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+    }
+
+    function triggerDownload(dataURL, fileName) {
+        const link = document.createElement('a');
+        link.href = dataURL;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+</script>
+
+</body>
+</html>
